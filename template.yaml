@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Tram circular route - Milestone 2 (EC2 worker + DynamoDB + S3 artifacts)
+Description: Tram circular route - Milestones 1-3 (EC2 worker + DynamoDB + S3 artifacts)
 
 Parameters:
   VpcId:
@@ -24,6 +24,23 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
       KeySchema: [{AttributeName: pk, KeyType: HASH}]
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
+      KeySchema: [{AttributeName: pk, KeyType: HASH}]
+
+  SessionsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: pk, AttributeType: S}]
+      KeySchema: [{AttributeName: pk, KeyType: HASH}]
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
   RidesTable:
     Type: AWS::DynamoDB::Table
@@ -56,6 +73,8 @@ Resources:
                   - dynamodb:Scan
                 Resource:
                   - !GetAtt StateTable.Arn
+                  - !GetAtt UsersTable.Arn
+                  - !GetAtt SessionsTable.Arn
                   - !GetAtt RidesTable.Arn
               - Effect: Allow
                 Action: s3:GetObject
@@ -102,6 +121,8 @@ Resources:
           mkdir -p /opt/tram
           cat > /etc/tram.env <<EOF
           TABLE_STATE=${StateTable}
+          TABLE_USERS=${UsersTable}
+          TABLE_SESSIONS=${SessionsTable}
           TABLE_RIDES=${RidesTable}
           AWS_REGION=${AWS::Region}
           AWS_DEFAULT_REGION=${AWS::Region}

@@ -6,7 +6,7 @@ body{font-family:Arial,sans-serif;background:#f4fbfa;color:#003344;margin:0;padd
 h1{margin:0 0 4px} h2{font-size:15px;margin:0 0 8px;letter-spacing:.5px}
 .row{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}
 .card{background:#fff;border:2px solid #00b4c6;border-radius:14px;padding:14px;flex:1;min-width:260px}
-.card.y{border-color:#f0d45a}
+.card.y{border-color:#f0d45a}.card.r{border-color:#ff6b5e}
 .big{font-size:20px;font-weight:bold;margin:6px 0}
 .muted{color:#456}
 .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:13px}
@@ -16,10 +16,15 @@ circle.st{fill:#fff;stroke:#00b4c6;stroke-width:2}
 circle.act{fill:#ff6b5e;stroke:#ff6b5e}
 text{font-size:10px;text-anchor:middle;dominant-baseline:central;font-weight:bold}
 text.act{fill:#fff}
+input,select,button{font-size:15px;padding:7px;margin:3px 0;border-radius:6px;border:1px solid #00b4c6}
+button{background:#00b4c6;color:#fff;cursor:pointer;border:0}
+button.r{background:#ff6b5e}
+.err{color:#c00;min-height:18px}
 .chip{display:inline-block;background:#e0f7fa;border-radius:10px;padding:1px 7px;margin:1px;font-size:12px}
 </style></head><body>
 <h1>Tram circular route</h1>
 <div class="muted">Public live view - no registration required. No names or personal destinations are shown.</div>
+
 <div class="row">
   <div class="card"><h2>CURRENT</h2>
     <div class="big" id="status">Loading...</div>
@@ -33,12 +38,33 @@ text.act{fill:#fff}
   </div>
   <div class="card y"><h2>WAITING PER STATION</h2><div class="grid" id="wait"></div></div>
 </div>
+
+<div class="row">
+  <div class="card r" id="authBox"><h2>REGISTER / LOGIN</h2>
+    <input id="u" placeholder="username (3-20: a-z 0-9 _)"><br>
+    <input id="p" type="password" placeholder="password (min. 8 characters)"><br>
+    <button id="bLogin">Login</button> <button id="bReg">Register</button>
+    <div class="err" id="authErr"></div>
+  </div>
+  <div class="card r" id="meBox" style="display:none"><h2>MY JOURNEY</h2>
+    <div id="hello" class="muted"></div>
+    <div id="rideInfo"></div>
+    <div id="reqForm"><b>Request a ride</b><br>
+      From <select id="from"></select> To <select id="to"></select><br>
+      <button id="bRide">Request ride</button>
+    </div>
+    <div class="err" id="rideErr"></div>
+    <button class="r" id="bOut">Log out</button>
+  </div>
+</div>
+
 <script>
 var N = 16, NS = "http://www.w3.org/2000/svg", svg = document.getElementById("c"), nodes = [], labels = [];
 function $(id){ return document.getElementById(id); }
 function pad(n){ return (n < 10 ? "0" : "") + n; }
 function sid(n){ return "S" + pad(n); }
 function fmt(s){ s = Math.round(s); return pad(Math.floor(s / 60)) + ":" + pad(s % 60); }
+
 for (var i = 0; i < N; i++) {
   var a = -Math.PI / 2 + i * 2 * Math.PI / N;
   var x = 150 + 115 * Math.cos(a), y = 150 + 115 * Math.sin(a);
@@ -47,9 +73,27 @@ for (var i = 0; i < N; i++) {
   var t = document.createElementNS(NS, "text");
   t.setAttribute("x", x); t.setAttribute("y", y); t.textContent = pad(i + 1);
   svg.appendChild(c); svg.appendChild(t); nodes.push(c); labels.push(t);
+  var o1 = document.createElement("option"); o1.value = i + 1; o1.textContent = sid(i + 1); $("from").appendChild(o1);
+  var o2 = document.createElement("option"); o2.value = i + 1; o2.textContent = sid(i + 1); $("to").appendChild(o2);
 }
-function refresh() {
-  fetch("/api/state").then(function (r) { return r.json(); }).then(function (s) {
+$("to").value = 2;
+
+var token = null;
+try { token = localStorage.getItem("tram_token"); } catch (e) {}
+
+function api(method, url, body) {
+  var opt = { method: method, headers: { "Content-Type": "application/json" } };
+  if (token) opt.headers["Authorization"] = "Bearer " + token;
+  if (body) opt.body = JSON.stringify(body);
+  return fetch(url, opt).then(function (r) {
+    return r.json().then(function (j) { return { ok: r.ok, status: r.status, data: j }; });
+  });
+}
+
+function refreshPublic() {
+  api("GET", "/api/state").then(function (r) {
+    if (!r.ok) return;
+    var s = r.data;
     for (var i = 0; i < N; i++) {
       var act = (i + 1 === s.station);
       nodes[i].setAttribute("class", act ? "st act" : "st");
@@ -74,5 +118,62 @@ function refresh() {
     $("wait").innerHTML = html;
   }).catch(function () { $("status").textContent = "No connection"; });
 }
-refresh(); setInterval(refresh, 1000);
+
+function showLoggedOut() { $("authBox").style.display = ""; $("meBox").style.display = "none"; }
+
+function showMe(d) {
+  $("authBox").style.display = "none"; $("meBox").style.display = "";
+  $("hello").textContent = "Signed in as " + d.username;
+  var r = d.ride;
+  if (r) {
+    $("reqForm").style.display = "none";
+    var txt = "<div class='big'>" + r.status + "</div>From " + sid(r.from_station) + " to " + sid(r.to_station) + "<br>";
+    txt += (r.status === "WAITING")
+      ? "Tram reaches " + sid(r.eta_station) + " in " + fmt(r.eta_seconds)
+      : "Arrival at " + sid(r.eta_station) + " in " + fmt(r.eta_seconds);
+    $("rideInfo").innerHTML = txt;
+  } else {
+    $("rideInfo").innerHTML = "<div class='muted'>No active ride.</div>";
+    $("reqForm").style.display = "";
+  }
+}
+
+function refreshMe() {
+  if (!token) { showLoggedOut(); return; }
+  api("GET", "/api/me").then(function (r) {
+    if (r.status === 401) { token = null; try { localStorage.removeItem("tram_token"); } catch (e) {} showLoggedOut(); return; }
+    if (r.ok) showMe(r.data);
+  });
+}
+
+function creds() { return { username: $("u").value.trim(), password: $("p").value }; }
+
+$("bReg").onclick = function () {
+  api("POST", "/api/register", creds()).then(function (r) {
+    $("authErr").textContent = r.ok ? "Registered - you can log in now." : r.data.error;
+  });
+};
+$("bLogin").onclick = function () {
+  api("POST", "/api/login", creds()).then(function (r) {
+    if (!r.ok) { $("authErr").textContent = r.data.error; return; }
+    token = r.data.token; $("authErr").textContent = ""; $("p").value = "";
+    try { localStorage.setItem("tram_token", token); } catch (e) {}
+    refreshMe();
+  });
+};
+$("bOut").onclick = function () {
+  api("POST", "/api/logout", {}).then(function () {
+    token = null; try { localStorage.removeItem("tram_token"); } catch (e) {}
+    showLoggedOut();
+  });
+};
+$("bRide").onclick = function () {
+  api("POST", "/api/ride", { from_station: parseInt($("from").value, 10), to_station: parseInt($("to").value, 10) }).then(function (r) {
+    $("rideErr").textContent = r.ok ? "" : r.data.error;
+    if (r.ok) showMe(r.data);
+  });
+};
+
+function loop() { refreshPublic(); refreshMe(); }
+loop(); setInterval(loop, 1000);
 </script></body></html>

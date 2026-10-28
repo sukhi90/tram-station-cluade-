@@ -1,4 +1,4 @@
-import os, json, time, threading
+import os, json, time, threading, hashlib, hmac, secrets, re
 import boto3
 from boto3.dynamodb.conditions import Attr
 from botocore.exceptions import ClientError
@@ -8,9 +8,13 @@ import logic
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 ddb = boto3.resource("dynamodb", region_name=REGION)
 T_STATE = ddb.Table(os.environ["TABLE_STATE"])
+T_USERS = ddb.Table(os.environ["TABLE_USERS"])
+T_SESSIONS = ddb.Table(os.environ["TABLE_SESSIONS"])
 T_RIDES = ddb.Table(os.environ["TABLE_RIDES"])
 HERE = os.path.dirname(os.path.abspath(__file__))
 TRAM_KEY = {"pk": "tram-1"}
+USER_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
+SESSION_TTL_S = 24 * 3600
 ACTIVE = ["WAITING", "ON_BOARD"]
 
 
@@ -116,6 +120,16 @@ def complete_ride(ride):
     except ClientError as e:
         if not cond_failed(e):
             raise
+    try:  # free the user for the next ride
+        T_USERS.update_item(
+            Key={"pk": ride["rider"]},
+            UpdateExpression="REMOVE active_ride",
+            ConditionExpression="active_ride = :r",
+            ExpressionAttributeValues={":r": ride["pk"]},
+        )
+    except ClientError as e:
+        if not cond_failed(e):
+            raise
     print("completed", logic.anon_id(ride["pk"]))
 
 
@@ -153,6 +167,77 @@ def worker():
         time.sleep(0.25)
 
 
+# ----------------------------------------------------------------- auth/users
+def hash_pw(pw, salt):
+    return hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), salt, 200000).hex()
+
+
+def register(username, pw):
+    if not isinstance(username, str) or not USER_RE.match(username):
+        raise ValueError("username: 3-20 characters, letters/digits/underscore")
+    if not isinstance(pw, str) or len(pw) < 8:
+        raise ValueError("password: at least 8 characters")
+    salt = os.urandom(16)
+    try:
+        T_USERS.put_item(
+            Item={"pk": username.lower(), "salt": salt.hex(), "pw_hash": hash_pw(pw, salt), "created_ms": now_ms()},
+            ConditionExpression="attribute_not_exists(pk)",
+        )
+    except ClientError as e:
+        if cond_failed(e):
+            raise ValueError("username already taken")
+        raise
+
+
+def login(username, pw):
+    u = T_USERS.get_item(Key={"pk": str(username).lower()}).get("Item")
+    if not u or not hmac.compare_digest(hash_pw(str(pw), bytes.fromhex(u["salt"])), u["pw_hash"]):
+        raise PermissionError("invalid username or password")
+    token = secrets.token_urlsafe(24)
+    T_SESSIONS.put_item(Item={"pk": token, "username": u["pk"], "expires_at": int(time.time()) + SESSION_TTL_S})
+    return token
+
+
+def session_user(token):
+    s = T_SESSIONS.get_item(Key={"pk": token}).get("Item")
+    if not s or int(s["expires_at"]) < time.time():
+        return None
+    return s["username"]
+
+
+def create_ride(username, a, b):
+    if not (isinstance(a, int) and isinstance(b, int) and 1 <= a <= logic.STATIONS and 1 <= b <= logic.STATIONS):
+        raise ValueError("stations must be numbers 1-16")
+    if a == b:
+        raise ValueError("start and destination must differ")
+    rid = secrets.token_hex(8)
+    for attempt in range(2):
+        try:  # atomic claim: only ONE active ride per person
+            T_USERS.update_item(
+                Key={"pk": username},
+                UpdateExpression="SET active_ride=:r",
+                ConditionExpression="attribute_exists(pk) AND attribute_not_exists(active_ride)",
+                ExpressionAttributeValues={":r": rid},
+            )
+            break
+        except ClientError as e:
+            if not cond_failed(e):
+                raise
+            cur = T_USERS.get_item(Key={"pk": username}, ConsistentRead=True)["Item"].get("active_ride")
+            old = T_RIDES.get_item(Key={"pk": cur}).get("Item") if cur else None
+            if attempt == 0 and old and old["ride_status"] == "COMPLETED":
+                T_USERS.update_item(Key={"pk": username}, UpdateExpression="REMOVE active_ride")  # stale lock
+                continue
+            raise ValueError("you already have an active ride")
+    try:
+        T_RIDES.put_item(Item={"pk": rid, "rider": username, "from_station": a, "to_station": b,
+                               "ride_status": "WAITING", "created_ms": now_ms()})
+    except Exception:
+        T_USERS.update_item(Key={"pk": username}, UpdateExpression="REMOVE active_ride")
+        raise
+    _cache["t"] = 0.0
+
+
 # --------------------------------------------------------------------- views
 def public_view():
     s, remaining = snapshot()
@@ -178,8 +263,36 @@ def public_view():
     }
 
 
+def my_view(username):
+    u = T_USERS.get_item(Key={"pk": username}, ConsistentRead=True)["Item"]
+    ride = None
+    rid = u.get("active_ride")
+    if rid:
+        r = T_RIDES.get_item(Key={"pk": rid}, ConsistentRead=True).get("Item")
+        if r and r["ride_status"] in ACTIVE:
+            s, remaining = snapshot()
+            target = int(r["from_station"]) if r["ride_status"] == "WAITING" else int(r["to_station"])
+            ride = {
+                "status": r["ride_status"],
+                "from_station": int(r["from_station"]),
+                "to_station": int(r["to_station"]),
+                "eta_station": target,
+                "eta_seconds": round(logic.eta_seconds(target, s["station"], s["phase"], remaining)),
+            }
+    return {"username": username, "ride": ride}
+
+
 # ---------------------------------------------------------------------- http
 class Handler(BaseHTTPRequestHandler):
+    def _json(self, code, obj):
+        data = json.dumps(obj).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(data)
+
     def _raw(self, code, data, ctype):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -188,11 +301,27 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _body(self):
+        n = int(self.headers.get("Content-Length") or 0)
+        if n > 10000:
+            raise ValueError("body too large")
+        return json.loads(self.rfile.read(n) or b"{}")
+
+    def _user(self):
+        h = self.headers.get("Authorization", "")
+        return session_user(h[7:]) if h.startswith("Bearer ") else None
+
     def do_GET(self):
         path = self.path.split("?")[0]
         try:
             if path == "/api/state":
-                self._raw(200, json.dumps(public_view()).encode("utf-8"), "application/json")
+                self._json(200, public_view())
+            elif path == "/api/me":
+                u = self._user()
+                if not u:
+                    self._json(401, {"error": "not logged in"})
+                else:
+                    self._json(200, my_view(u))
             elif path == "/health":
                 self._raw(200, b"ok", "text/plain")
             else:
@@ -200,7 +329,37 @@ class Handler(BaseHTTPRequestHandler):
                     self._raw(200, f.read(), "text/html; charset=utf-8")
         except Exception as e:
             print("GET error:", e)
-            self._raw(500, b'{"error": "server error"}', "application/json")
+            self._json(500, {"error": "server error"})
+
+    def do_POST(self):
+        path = self.path.split("?")[0]
+        try:
+            d = self._body()
+            if path == "/api/register":
+                register(d.get("username"), d.get("password"))
+                self._json(201, {"ok": True})
+            elif path == "/api/login":
+                self._json(200, {"token": login(d.get("username"), d.get("password"))})
+            elif path == "/api/logout":
+                h = self.headers.get("Authorization", "")
+                if h.startswith("Bearer "):
+                    T_SESSIONS.delete_item(Key={"pk": h[7:]})
+                self._json(200, {"ok": True})
+            elif path == "/api/ride":
+                u = self._user()
+                if not u:
+                    raise PermissionError("not logged in")
+                create_ride(u, d.get("from_station"), d.get("to_station"))
+                self._json(201, my_view(u))
+            else:
+                self._json(404, {"error": "not found"})
+        except ValueError as e:
+            self._json(400, {"error": str(e)})
+        except PermissionError as e:
+            self._json(401, {"error": str(e)})
+        except Exception as e:
+            print("POST error:", e)
+            self._json(500, {"error": "server error"})
 
     def log_message(self, *a):
         pass

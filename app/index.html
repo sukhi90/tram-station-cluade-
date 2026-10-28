@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Tram circular route</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:Arial,sans-serif;background:#f4fbfa;color:#003344;margin:0;padding:16px}
+h1{margin:0 0 4px} h2{font-size:15px;margin:0 0 8px;letter-spacing:.5px}
+.row{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}
+.card{background:#fff;border:2px solid #00b4c6;border-radius:14px;padding:14px;flex:1;min-width:260px}
+.card.y{border-color:#f0d45a}
+.big{font-size:20px;font-weight:bold;margin:6px 0}
+.muted{color:#456}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:13px}
+.cell{padding:3px 5px;border-radius:6px;background:#eef6f6}
+.cell.has{background:#fff3c4;font-weight:bold}
+circle.st{fill:#fff;stroke:#00b4c6;stroke-width:2}
+circle.act{fill:#ff6b5e;stroke:#ff6b5e}
+text{font-size:10px;text-anchor:middle;dominant-baseline:central;font-weight:bold}
+text.act{fill:#fff}
+.chip{display:inline-block;background:#e0f7fa;border-radius:10px;padding:1px 7px;margin:1px;font-size:12px}
+</style></head><body>
+<h1>Tram circular route</h1>
+<div class="muted">Public live view - no registration required. No names or personal destinations are shown.</div>
+<div class="row">
+  <div class="card"><h2>CURRENT</h2>
+    <div class="big" id="status">Loading...</div>
+    <div id="timer"></div>
+    <div id="dir" class="muted"></div>
+    <div style="margin-top:8px"><b id="onboard">0</b> on board &middot; <b id="free">0</b> free seats</div>
+    <div id="onboardIds"></div>
+  </div>
+  <div class="card" style="text-align:center"><h2>CIRCULAR ROUTE - 16 STATIONS</h2>
+    <svg id="c" width="300" height="300" viewBox="0 0 300 300"></svg>
+  </div>
+  <div class="card y"><h2>WAITING PER STATION</h2><div class="grid" id="wait"></div></div>
+</div>
+<script>
+var N = 16, NS = "http://www.w3.org/2000/svg", svg = document.getElementById("c"), nodes = [], labels = [];
+function $(id){ return document.getElementById(id); }
+function pad(n){ return (n < 10 ? "0" : "") + n; }
+function sid(n){ return "S" + pad(n); }
+function fmt(s){ s = Math.round(s); return pad(Math.floor(s / 60)) + ":" + pad(s % 60); }
+for (var i = 0; i < N; i++) {
+  var a = -Math.PI / 2 + i * 2 * Math.PI / N;
+  var x = 150 + 115 * Math.cos(a), y = 150 + 115 * Math.sin(a);
+  var c = document.createElementNS(NS, "circle");
+  c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 14); c.setAttribute("class", "st");
+  var t = document.createElementNS(NS, "text");
+  t.setAttribute("x", x); t.setAttribute("y", y); t.textContent = pad(i + 1);
+  svg.appendChild(c); svg.appendChild(t); nodes.push(c); labels.push(t);
+}
+function refresh() {
+  fetch("/api/state").then(function (r) { return r.json(); }).then(function (s) {
+    for (var i = 0; i < N; i++) {
+      var act = (i + 1 === s.station);
+      nodes[i].setAttribute("class", act ? "st act" : "st");
+      labels[i].setAttribute("class", act ? "act" : "");
+    }
+    if (s.phase === "STOPPED") {
+      $("status").textContent = "Stop at " + sid(s.station);
+      $("timer").textContent = "Departure in " + fmt(s.remaining_seconds) + " (next stop " + sid(s.next_station) + ")";
+    } else {
+      $("status").textContent = "Traveling " + sid(s.station) + " to " + sid(s.next_station);
+      $("timer").textContent = "Arrival at " + sid(s.next_station) + " in " + fmt(s.remaining_seconds);
+    }
+    $("dir").textContent = "Direction: " + s.direction;
+    $("onboard").textContent = s.on_board;
+    $("free").textContent = s.free_seats;
+    $("onboardIds").innerHTML = s.on_board_ids.map(function (a) { return "<span class='chip'>" + a + "</span>"; }).join("");
+    var html = "";
+    for (var k = 1; k <= N; k++) {
+      var ids = s.waiting[String(k)] || [];
+      html += "<div class='cell" + (ids.length ? " has" : "") + "' title='" + ids.join(", ") + "'>" + sid(k) + ": " + ids.length + "</div>";
+    }
+    $("wait").innerHTML = html;
+  }).catch(function () { $("status").textContent = "No connection"; });
+}
+refresh(); setInterval(refresh, 1000);
+</script></body></html>

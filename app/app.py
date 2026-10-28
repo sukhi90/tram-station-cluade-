@@ -123,9 +123,9 @@ def complete_ride(ride):
     try:  # free the user for the next ride
         T_USERS.update_item(
             Key={"pk": ride["rider"]},
-            UpdateExpression="REMOVE active_ride",
+            UpdateExpression="REMOVE active_ride SET last_ride=:l",
             ConditionExpression="active_ride = :r",
-            ExpressionAttributeValues={":r": ride["pk"]},
+            ExpressionAttributeValues={":r": ride["pk"], ":l": ride["pk"]},
         )
     except ClientError as e:
         if not cond_failed(e):
@@ -150,9 +150,8 @@ def process_stop(station):
         complete_ride(r)
     on_board = sum(1 for r in rides if r["ride_status"] == "ON_BOARD") - len(alighting)
     free = logic.CAPACITY - on_board
-    here = sorted((r for r in rides if r["ride_status"] == "WAITING" and int(r["from_station"]) == station),
-                  key=lambda r: int(r["created_ms"]))
-    for r in here[:max(free, 0)]:
+    here = [r for r in rides if r["ride_status"] == "WAITING" and int(r["from_station"]) == station]
+    for r in logic.select_boarders(here, free):  # FIFO, max 12 passengers
         board_ride(r)
 
 
@@ -263,23 +262,30 @@ def public_view():
     }
 
 
+def ride_summary(r):
+    a, b = int(r["from_station"]), int(r["to_station"])
+    return {"status": r["ride_status"], "from_station": a, "to_station": b, "path": logic.route(a, b)}
+
+
 def my_view(username):
     u = T_USERS.get_item(Key={"pk": username}, ConsistentRead=True)["Item"]
     ride = None
+    last = None
     rid = u.get("active_ride")
     if rid:
         r = T_RIDES.get_item(Key={"pk": rid}, ConsistentRead=True).get("Item")
         if r and r["ride_status"] in ACTIVE:
             s, remaining = snapshot()
             target = int(r["from_station"]) if r["ride_status"] == "WAITING" else int(r["to_station"])
-            ride = {
-                "status": r["ride_status"],
-                "from_station": int(r["from_station"]),
-                "to_station": int(r["to_station"]),
-                "eta_station": target,
-                "eta_seconds": round(logic.eta_seconds(target, s["station"], s["phase"], remaining)),
-            }
-    return {"username": username, "ride": ride}
+            ride = ride_summary(r)
+            ride["eta_station"] = target
+            ride["eta_seconds"] = round(logic.eta_seconds(target, s["station"], s["phase"], remaining))
+    lid = u.get("last_ride")
+    if lid:
+        r = T_RIDES.get_item(Key={"pk": lid}).get("Item")
+        if r and r["ride_status"] == "COMPLETED":
+            last = ride_summary(r)
+    return {"username": username, "ride": ride, "last_ride": last}
 
 
 # ---------------------------------------------------------------------- http

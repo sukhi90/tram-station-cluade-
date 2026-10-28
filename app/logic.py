@@ -2,7 +2,7 @@
 STATIONS = 16
 STOP_S = 3
 TRAVEL_S = 5
-CAPACITY = 6  # seats in the tram
+CAPACITY = 12  # Milestone 4: maximum 12 passengers
 
 
 def phase_ms(phase):
@@ -11,6 +11,14 @@ def phase_ms(phase):
 
 def next_station(s):
     return s % STATIONS + 1
+
+
+def route(a, b):
+    """Stations a tram passes from a to b (inclusive), always forward around the loop."""
+    path = [a]
+    while path[-1] != b:
+        path.append(next_station(path[-1]))
+    return path
 
 
 def eta_seconds(target, station, phase, remaining):
@@ -25,6 +33,13 @@ def eta_seconds(target, station, phase, remaining):
     nxt = next_station(station)
     d = (target - nxt) % STATIONS  # 0..15
     return remaining + d * (STOP_S + TRAVEL_S)
+
+
+def select_boarders(waiting, free):
+    """FIFO: the earliest ride requests board first, at most `free` of them."""
+    if free <= 0:
+        return []
+    return sorted(waiting, key=lambda r: (int(r["created_ms"]), r["pk"]))[:free]
 
 
 def anon_id(ride_id):

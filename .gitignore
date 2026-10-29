@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.zip
+.env
+*.pem
+*.key
+.DS_Store
+
+# data backups contain password hashes
+backup*.json

@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Tram circular route</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:Arial,sans-serif;background:#f4fbfa;color:#003344;margin:0;padding:16px}
+h1{margin:0 0 4px} h2{font-size:15px;margin:0 0 8px;letter-spacing:.5px}
+.row{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px}
+.card{background:#fff;border:2px solid #00b4c6;border-radius:14px;padding:14px;flex:1;min-width:260px}
+.card.y{border-color:#f0d45a}.card.r{border-color:#ff6b5e}
+.big{font-size:20px;font-weight:bold;margin:6px 0}
+.muted{color:#456}
+.grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;font-size:13px}
+.cell{padding:3px 5px;border-radius:6px;background:#eef6f6}
+.cell.has{background:#fff3c4;font-weight:bold}
+circle.st{fill:#fff;stroke:#00b4c6;stroke-width:2}
+circle.act{fill:#ff6b5e;stroke:#ff6b5e}
+circle.pth{stroke:#f0b400;stroke-width:4}
+.step{display:inline-block;padding:2px 7px;margin:2px;border-radius:10px;background:#eef6f6;font-size:12px}
+.step.done{background:#c8f0d0}.step.now{background:#ff6b5e;color:#fff;font-weight:bold}
+.step.start{border:2px solid #00b4c6}.step.end{border:2px solid #f0b400}
+.ok{color:#0a7a2f;font-weight:bold}
+text{font-size:10px;text-anchor:middle;dominant-baseline:central;font-weight:bold}
+text.act{fill:#fff}
+input,select,button{font-size:15px;padding:7px;margin:3px 0;border-radius:6px;border:1px solid #00b4c6}
+button{background:#00b4c6;color:#fff;cursor:pointer;border:0}
+button.r{background:#ff6b5e}
+.err{color:#c00;min-height:18px}
+.chip{display:inline-block;background:#e0f7fa;border-radius:10px;padding:1px 7px;margin:1px;font-size:12px}
+</style></head><body>
+<h1>Tram circular route</h1>
+<div class="muted">Public live view - no registration required. No names or personal destinations are shown.</div>
+
+<div class="row">
+  <div class="card"><h2>CURRENT</h2>
+    <div class="big" id="status">Loading...</div>
+    <div id="timer"></div>
+    <div id="dir" class="muted"></div>
+    <div style="margin-top:8px"><b id="onboard">0</b> on board &middot; <b id="free">0</b> free seats</div>
+    <div id="onboardIds"></div>
+  </div>
+  <div class="card" style="text-align:center"><h2>CIRCULAR ROUTE - <span id="lineN">16</span> STATIONS</h2>
+    <svg id="c" width="300" height="300" viewBox="0 0 300 300"></svg>
+  </div>
+  <div class="card y"><h2>WAITING PER STATION</h2><div class="grid" id="wait"></div></div>
+</div>
+
+<div class="row">
+  <div class="card r" id="authBox"><h2>REGISTER / LOGIN</h2>
+    <input id="u" placeholder="username (3-20: a-z 0-9 _)"><br>
+    <input id="p" type="password" placeholder="password (min. 8 characters)"><br>
+    <button id="bLogin">Login</button> <button id="bReg">Register</button>
+    <div class="err" id="authErr"></div>
+  </div>
+  <div class="card r" id="meBox" style="display:none"><h2>MY JOURNEY</h2>
+    <div id="hello" class="muted"></div>
+    <div id="rideInfo"></div>
+    <div id="reqForm"><b>Request a ride</b><br>
+      From <select id="from"></select> To <select id="to"></select><br>
+      <button id="bRide">Request ride</button>
+    </div>
+    <div class="err" id="rideErr"></div>
+    <button class="r" id="bOut">Log out</button>
+  </div>
+</div>
+
+<script>
+var N = 0, NS = "http://www.w3.org/2000/svg", svg = document.getElementById("c"), nodes = [], labels = [];
+function $(id){ return document.getElementById(id); }
+function pad(n){ return (n < 10 ? "0" : "") + n; }
+function sid(n){ return "S" + pad(n); }
+function fmt(s){ s = Math.round(s); return pad(Math.floor(s / 60)) + ":" + pad(s % 60); }
+
+function build(n) {  // the line (number of stations) comes from the server, nothing is hardcoded here
+  N = n; nodes = []; labels = [];
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  $("from").innerHTML = ""; $("to").innerHTML = "";
+  $("lineN").textContent = n;
+  var rad = Math.min(14, Math.floor(Math.PI * 115 / n) - 2);
+  for (var i = 0; i < n; i++) {
+    var a = -Math.PI / 2 + i * 2 * Math.PI / n;
+    var x = 150 + 115 * Math.cos(a), y = 150 + 115 * Math.sin(a);
+    var c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", rad); c.setAttribute("class", "st");
+    var t = document.createElementNS(NS, "text");
+    t.setAttribute("x", x); t.setAttribute("y", y); t.textContent = pad(i + 1);
+    svg.appendChild(c); svg.appendChild(t); nodes.push(c); labels.push(t);
+    var o1 = document.createElement("option"); o1.value = i + 1; o1.textContent = sid(i + 1); $("from").appendChild(o1);
+    var o2 = document.createElement("option"); o2.value = i + 1; o2.textContent = sid(i + 1); $("to").appendChild(o2);
+  }
+  $("to").value = 2;
+}
+
+var lastState = null, myPath = [];
+var token = null;
+try { token = localStorage.getItem("tram_token"); } catch (e) {}
+
+function api(method, url, body) {
+  var opt = { method: method, headers: { "Content-Type": "application/json" } };
+  if (token) opt.headers["Authorization"] = "Bearer " + token;
+  if (body) opt.body = JSON.stringify(body);
+  return fetch(url, opt).then(function (r) {
+    return r.json().then(function (j) { return { ok: r.ok, status: r.status, data: j }; });
+  });
+}
+
+function refreshPublic() {
+  api("GET", "/api/state").then(function (r) {
+    if (!r.ok) return;
+    var s = r.data;
+    lastState = s;
+    if (s.stations !== N) build(s.stations);
+    for (var i = 0; i < N; i++) {
+      var act = (i + 1 === s.station);
+      nodes[i].setAttribute("class", act ? "st act" : (myPath.indexOf(i + 1) >= 0 ? "st pth" : "st"));
+      labels[i].setAttribute("class", act ? "act" : "");
+    }
+    if (s.phase === "STOPPED") {
+      $("status").textContent = "Stop at " + sid(s.station);
+      $("timer").textContent = "Departure in " + fmt(s.remaining_seconds) + " (next stop " + sid(s.next_station) + ")";
+    } else {
+      $("status").textContent = "Traveling " + sid(s.station) + " to " + sid(s.next_station);
+      $("timer").textContent = "Arrival at " + sid(s.next_station) + " in " + fmt(s.remaining_seconds);
+    }
+    $("dir").textContent = "Direction: " + s.direction;
+    $("onboard").textContent = s.on_board;
+    $("free").textContent = s.free_seats;
+    $("onboardIds").innerHTML = s.on_board_ids.map(function (a) { return "<span class='chip'>" + a + "</span>"; }).join("");
+    var html = "";
+    for (var k = 1; k <= N; k++) {
+      var ids = s.waiting[String(k)] || [];
+      html += "<div class='cell" + (ids.length ? " has" : "") + "' title='" + ids.join(", ") + "'>" + sid(k) + ": " + ids.length + "</div>";
+    }
+    $("wait").innerHTML = html;
+  }).catch(function () { $("status").textContent = "No connection"; });
+}
+
+function showLoggedOut() { myPath = []; $("authBox").style.display = ""; $("meBox").style.display = "none"; }
+
+function pathHtml(path, status) {
+  var idx = -1;
+  if (status === "ON_BOARD" && lastState) idx = path.indexOf(lastState.station);
+  var out = "";
+  for (var i = 0; i < path.length; i++) {
+    var cls = "step";
+    if (status === "COMPLETED") cls += " done";
+    else if (idx >= 0 && i < idx) cls += " done";
+    else if (idx >= 0 && i === idx) cls += " now";
+    if (i === 0) cls += " start";
+    if (i === path.length - 1) cls += " end";
+    out += "<span class='" + cls + "'>" + sid(path[i]) + "</span>" + (i < path.length - 1 ? " &rarr; " : "");
+  }
+  return out;
+}
+
+function showMe(d) {
+  $("authBox").style.display = "none"; $("meBox").style.display = "";
+  $("hello").textContent = "Signed in as " + d.username;
+  var r = d.ride;
+  if (r) {
+    myPath = r.path;
+    $("reqForm").style.display = "none";
+    var txt = "<div class='big'>" + r.status + "</div>From " + sid(r.from_station) + " to " + sid(r.to_station) + "<br>";
+    txt += (r.status === "WAITING")
+      ? "Tram reaches " + sid(r.eta_station) + " in " + fmt(r.eta_seconds)
+      : "Arrival at " + sid(r.eta_station) + " in " + fmt(r.eta_seconds);
+    txt += "<div style='margin-top:8px'><b>Journey path</b> (" + (r.path.length - 1) + " stops)<br>" + pathHtml(r.path, r.status) + "</div>";
+    $("rideInfo").innerHTML = txt;
+  } else {
+    myPath = [];
+    var l = d.last_ride, info = "";
+    if (l) {
+      info = "<div class='big ok'>COMPLETED</div>You arrived at " + sid(l.to_station) + " (from " + sid(l.from_station) + ").<br>" +
+             pathHtml(l.path, "COMPLETED") + "<div class='muted' style='margin-top:6px'>You can request a new ride.</div>";
+    } else {
+      info = "<div class='muted'>No active ride.</div>";
+    }
+    $("rideInfo").innerHTML = info;
+    $("reqForm").style.display = "";
+  }
+}
+
+function refreshMe() {
+  if (!token) { showLoggedOut(); return; }
+  api("GET", "/api/me").then(function (r) {
+    if (r.status === 401) { token = null; try { localStorage.removeItem("tram_token"); } catch (e) {} showLoggedOut(); return; }
+    if (r.ok) showMe(r.data);
+  });
+}
+
+function creds() { return { username: $("u").value.trim(), password: $("p").value }; }
+
+$("bReg").onclick = function () {
+  api("POST", "/api/register", creds()).then(function (r) {
+    $("authErr").textContent = r.ok ? "Registered - you can log in now." : r.data.error;
+  });
+};
+$("bLogin").onclick = function () {
+  api("POST", "/api/login", creds()).then(function (r) {
+    if (!r.ok) { $("authErr").textContent = r.data.error; return; }
+    token = r.data.token; $("authErr").textContent = ""; $("p").value = "";
+    try { localStorage.setItem("tram_token", token); } catch (e) {}
+    refreshMe();
+  });
+};
+$("bOut").onclick = function () {
+  api("POST", "/api/logout", {}).then(function () {
+    token = null; try { localStorage.removeItem("tram_token"); } catch (e) {}
+    showLoggedOut();
+  });
+};
+$("bRide").onclick = function () {
+  api("POST", "/api/ride", { from_station: parseInt($("from").value, 10), to_station: parseInt($("to").value, 10) }).then(function (r) {
+    $("rideErr").textContent = r.ok ? "" : r.data.error;
+    if (r.ok) showMe(r.data);
+  });
+};
+
+function loop() { refreshPublic(); refreshMe(); }
+loop(); setInterval(loop, 1000);
+</script></body></html>

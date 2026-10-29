@@ -78,7 +78,7 @@ The second ride request of the same user must be rejected.
 
 Verify
 ```bash
-python3 -m unittest discover -s tests -v          # 20 tests, includes FIFO and capacity
+python3 -m unittest discover -s tests -v          # 72 tests, includes FIFO, capacity, restart, permissions
 bash deploy.sh                                     # redeploys and reboots the instance
 python3 capacity_test.py http://<PUBLIC_IP>        # live proof: 12 on board, 2 waiting, COMPLETED, new ride
 ```
@@ -93,3 +93,26 @@ uploads `app/` to S3, deploys the stack and reboots the instance so it loads the
 ```bash
 git log --oneline
 ```
+
+## Milestone 5 - Release candidate: securely and verifiably operated
+
+| Requirement | Solution |
+|---|---|
+| Tests for clock speed, status changes, travel restrictions, restart | `tests/test_app.py`: the real `app.py` runs against an in-memory DynamoDB and a fake clock (a 128 s lap in milliseconds). Classes: `TestClockSpeed`, `TestStatusChanges`, `TestTravelRestrictions`, `TestRestart`, `TestSecurityAndPrivacy`, `TestHttpApi` |
+| Faulty tests prevent delivery | `deploy.sh` runs the tests first and exits before touching AWS; GitHub Actions runs them on every push |
+| Minimum permissions | per-table IAM actions; `tests/test_permissions.py` compares the policy with the calls in `app.py`; port 80 only; S3 read-only on `app/*`; no keys |
+| Reproducible deployment | `bash deploy.sh` from a clean clone: tests, S3, CloudFormation |
+| Documentation | `docs/ARCHITECTURE.md`, `DEPLOYMENT.md`, `RECOVERY.md`, `DEMO.md`, architecture diagram |
+
+Verify
+```bash
+python3 -m unittest discover -s tests -v
+python3 restart_test.py http://<PUBLIC_IP>        # live: reboots the instance
+python3 data_backup.py export backup.json          # sandbox-break safety copy
+```
+
+Bug found by the new tests: a ride request from an unknown user returned a server error instead of a clean 400.
+
+## Changing the rules
+
+See [CHANGING_THE_RULES.md](CHANGING_THE_RULES.md).

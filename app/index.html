@@ -38,7 +38,7 @@ button.r{background:#ff6b5e}
     <div style="margin-top:8px"><b id="onboard">0</b> on board &middot; <b id="free">0</b> free seats</div>
     <div id="onboardIds"></div>
   </div>
-  <div class="card" style="text-align:center"><h2>CIRCULAR ROUTE - 16 STATIONS</h2>
+  <div class="card" style="text-align:center"><h2>CIRCULAR ROUTE - <span id="lineN">16</span> STATIONS</h2>
     <svg id="c" width="300" height="300" viewBox="0 0 300 300"></svg>
   </div>
   <div class="card y"><h2>WAITING PER STATION</h2><div class="grid" id="wait"></div></div>
@@ -64,24 +64,31 @@ button.r{background:#ff6b5e}
 </div>
 
 <script>
-var N = 16, NS = "http://www.w3.org/2000/svg", svg = document.getElementById("c"), nodes = [], labels = [];
+var N = 0, NS = "http://www.w3.org/2000/svg", svg = document.getElementById("c"), nodes = [], labels = [];
 function $(id){ return document.getElementById(id); }
 function pad(n){ return (n < 10 ? "0" : "") + n; }
 function sid(n){ return "S" + pad(n); }
 function fmt(s){ s = Math.round(s); return pad(Math.floor(s / 60)) + ":" + pad(s % 60); }
 
-for (var i = 0; i < N; i++) {
-  var a = -Math.PI / 2 + i * 2 * Math.PI / N;
-  var x = 150 + 115 * Math.cos(a), y = 150 + 115 * Math.sin(a);
-  var c = document.createElementNS(NS, "circle");
-  c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", 14); c.setAttribute("class", "st");
-  var t = document.createElementNS(NS, "text");
-  t.setAttribute("x", x); t.setAttribute("y", y); t.textContent = pad(i + 1);
-  svg.appendChild(c); svg.appendChild(t); nodes.push(c); labels.push(t);
-  var o1 = document.createElement("option"); o1.value = i + 1; o1.textContent = sid(i + 1); $("from").appendChild(o1);
-  var o2 = document.createElement("option"); o2.value = i + 1; o2.textContent = sid(i + 1); $("to").appendChild(o2);
+function build(n) {  // the line (number of stations) comes from the server, nothing is hardcoded here
+  N = n; nodes = []; labels = [];
+  while (svg.firstChild) svg.removeChild(svg.firstChild);
+  $("from").innerHTML = ""; $("to").innerHTML = "";
+  $("lineN").textContent = n;
+  var rad = Math.min(14, Math.floor(Math.PI * 115 / n) - 2);
+  for (var i = 0; i < n; i++) {
+    var a = -Math.PI / 2 + i * 2 * Math.PI / n;
+    var x = 150 + 115 * Math.cos(a), y = 150 + 115 * Math.sin(a);
+    var c = document.createElementNS(NS, "circle");
+    c.setAttribute("cx", x); c.setAttribute("cy", y); c.setAttribute("r", rad); c.setAttribute("class", "st");
+    var t = document.createElementNS(NS, "text");
+    t.setAttribute("x", x); t.setAttribute("y", y); t.textContent = pad(i + 1);
+    svg.appendChild(c); svg.appendChild(t); nodes.push(c); labels.push(t);
+    var o1 = document.createElement("option"); o1.value = i + 1; o1.textContent = sid(i + 1); $("from").appendChild(o1);
+    var o2 = document.createElement("option"); o2.value = i + 1; o2.textContent = sid(i + 1); $("to").appendChild(o2);
+  }
+  $("to").value = 2;
 }
-$("to").value = 2;
 
 var lastState = null, myPath = [];
 var token = null;
@@ -101,6 +108,7 @@ function refreshPublic() {
     if (!r.ok) return;
     var s = r.data;
     lastState = s;
+    if (s.stations !== N) build(s.stations);
     for (var i = 0; i < N; i++) {
       var act = (i + 1 === s.station);
       nodes[i].setAttribute("class", act ? "st act" : (myPath.indexOf(i + 1) >= 0 ? "st pth" : "st"));

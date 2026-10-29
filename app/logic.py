@@ -15,6 +15,8 @@ def next_station(s):
 
 def route(a, b):
     """Stations a tram passes from a to b (inclusive), always forward around the loop."""
+    if not (1 <= a <= STATIONS and 1 <= b <= STATIONS):
+        raise ValueError("station out of range 1-%d" % STATIONS)
     path = [a]
     while path[-1] != b:
         path.append(next_station(path[-1]))

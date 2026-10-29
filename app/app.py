@@ -16,6 +16,7 @@ TRAM_KEY = {"pk": "tram-1"}
 USER_RE = re.compile(r"^[A-Za-z0-9_]{3,20}$")
 SESSION_TTL_S = 24 * 3600
 ACTIVE = ["WAITING", "ON_BOARD"]
+LAG_RESET_MS = 2 * (logic.STOP_S + logic.TRAVEL_S) * 1000  # after a longer outage do not replay the past
 
 
 def now_ms():
@@ -42,7 +43,10 @@ def init_state():
 
 def get_state():
     it = T_STATE.get_item(Key=TRAM_KEY, ConsistentRead=True)["Item"]
-    return {"station": int(it["station"]), "phase": it["phase"], "phase_start_ms": int(it["phase_start_ms"])}
+    st = int(it["station"])
+    if not 1 <= st <= logic.STATIONS:  # the line was shortened: restart at S01
+        st = 1
+    return {"station": st, "phase": it["phase"], "phase_start_ms": int(it["phase_start_ms"])}
 
 
 def snapshot():
@@ -58,7 +62,7 @@ def advance():
     if t - s["phase_start_ms"] < dur:
         return s
     start = s["phase_start_ms"] + dur
-    if t - start > 16000:  # long downtime: do not replay the past
+    if t - start > LAG_RESET_MS:  # long downtime: do not replay the past
         start = t
     if s["phase"] == "STOPPED":
         new = {"station": s["station"], "phase": "TRAVELING", "phase_start_ms": start}
@@ -155,12 +159,17 @@ def process_stop(station):
         board_ride(r)
 
 
+def tick():
+    """One simulation step (also called directly by the tests)."""
+    s = advance()
+    if s["phase"] == "STOPPED":
+        process_stop(s["station"])
+
+
 def worker():
     while True:
         try:
-            s = advance()
-            if s["phase"] == "STOPPED":
-                process_stop(s["station"])
+            tick()
         except Exception as e:
             print("worker error:", e)
         time.sleep(0.25)
@@ -205,8 +214,8 @@ def session_user(token):
 
 
 def create_ride(username, a, b):
-    if not (isinstance(a, int) and isinstance(b, int) and 1 <= a <= logic.STATIONS and 1 <= b <= logic.STATIONS):
-        raise ValueError("stations must be numbers 1-16")
+    if not all(isinstance(x, int) and not isinstance(x, bool) and 1 <= x <= logic.STATIONS for x in (a, b)):
+        raise ValueError("stations must be numbers 1-%d" % logic.STATIONS)
     if a == b:
         raise ValueError("start and destination must differ")
     rid = secrets.token_hex(8)
@@ -222,7 +231,10 @@ def create_ride(username, a, b):
         except ClientError as e:
             if not cond_failed(e):
                 raise
-            cur = T_USERS.get_item(Key={"pk": username}, ConsistentRead=True)["Item"].get("active_ride")
+            user = T_USERS.get_item(Key={"pk": username}, ConsistentRead=True).get("Item")
+            if not user:
+                raise ValueError("unknown user")
+            cur = user.get("active_ride")
             old = T_RIDES.get_item(Key={"pk": cur}).get("Item") if cur else None
             if attempt == 0 and old and old["ride_status"] == "COMPLETED":
                 T_USERS.update_item(Key={"pk": username}, UpdateExpression="REMOVE active_ride")  # stale lock
@@ -251,7 +263,10 @@ def public_view():
     return {
         "station": s["station"],
         "next_station": logic.next_station(s["station"]),
-        "direction": "clockwise (S01 to S16, then S01)",
+        "direction": "clockwise (S01 to S%02d, then S01)" % logic.STATIONS,
+        "stations": logic.STATIONS,
+        "stop_seconds": logic.STOP_S,
+        "travel_seconds": logic.TRAVEL_S,
         "phase": s["phase"],
         "remaining_seconds": round(remaining, 1),
         "capacity": logic.CAPACITY,

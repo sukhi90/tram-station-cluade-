@@ -6,6 +6,8 @@ follow WAITING -> ON_BOARD -> COMPLETED live. Everything runs on AWS and is depl
 
 ## Architecture
 
+![Architecture](docs/architecture.png)
+
 ```
 Browser --HTTP:80--> EC2 (systemd service: worker + web server) --> DynamoDB (State, Users, Sessions, Rides)
                           ^
@@ -24,24 +26,32 @@ Browser --HTTP:80--> EC2 (systemd service: worker + web server) --> DynamoDB (St
 
 ```bash
 git clone https://github.com/<USER>/<REPO>.git && cd <REPO>
-python3 -m unittest discover -s tests -v   # tests run first
-bash deploy.sh                              # tests + S3 upload + CloudFormation; prints PUBLIC URL
+bash deploy.sh        # runs the tests first (failure = no delivery), then S3 + CloudFormation; prints PUBLIC URL
 ```
 
-## Verify
+## Tests
 
 ```bash
-bash smoke_test.sh http://<PUBLIC_IP>        # register, login, ride, max one active ride
-python3 capacity_test.py http://<PUBLIC_IP>  # 12 passengers max, FIFO, COMPLETED, new ride (~5 min)
+python3 -m unittest discover -s tests -v    # 72 tests, no AWS needed
+bash smoke_test.sh http://<PUBLIC_IP>        # live: register, login, ride, max one active ride
+python3 capacity_test.py http://<PUBLIC_IP>  # live: capacity limit, FIFO, COMPLETED, new ride (3-5 min)
+python3 restart_test.py http://<PUBLIC_IP>   # live: reboots the instance, state must survive (2-3 min)
 ```
 
-## Restart / recovery
+## Documentation
 
-```bash
-aws ec2 reboot-instances --instance-ids <INSTANCE_ID>   # tram and rides continue where they were
-```
+| | |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | diagram, components, data model, security |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | deploy, update, roll back, troubleshoot |
+| [docs/RECOVERY.md](docs/RECOVERY.md) | restart, lost instance, sandbox break, backup/restore |
+| [docs/DEMO.md](docs/DEMO.md) | presentation script and Q&A |
+| [docs/CHANGING_THE_RULES.md](docs/CHANGING_THE_RULES.md) | stations, timing, capacity |
+| [docs/STEP_BY_STEP.md](docs/STEP_BY_STEP.md) | how the project was built, milestone by milestone |
 
-Full walkthrough: [docs/STEP_BY_STEP.md](docs/STEP_BY_STEP.md)
+## Helper scripts
+
+`reset_data.py` clears data after a rule change, `data_backup.py` exports/imports the data, `docs/architecture_diagram.py` redraws the diagram.
 
 ## Clean up
 
